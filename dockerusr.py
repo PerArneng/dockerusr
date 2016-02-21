@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 
-# created by Per Arneng 2016
+# Author: Per Arneng
+# License: Apache License Version 2.0
 
 import argparse
 import hashlib
 import os
 import pwd
 import subprocess
-
 import sys
+from abc import abstractmethod, ABCMeta
 
 
 def md5_sum(plain_text: str):
@@ -116,51 +117,89 @@ class ProgramArguments:
                                 args.keepcontainer, args.keepscript, args.dryrun)
 
 
-def render_run_script(usr: UserInfo, args: ProgramArguments) -> str:
+class PathInfo:
 
-    home_opts = ""
-    if not args.usehome:
-        home_opts = "-m -d {u.home_dir}".format(u=usr)
+    tmp = None  # type: str
+    cwd = None  # type: str
+    tmp_in_container = None  # type: str
+    root_in_container = None  # type: str
 
-    script_template = """#!/usr/bin/env bash
+    def __init__(self):
+        self.tmp = "/tmp"
+        self.cwd = os.getcwd()
+        self.root_in_container = "/host_root"
+        self.tmp_in_container = "/host_tmp"
+
+
+class ScriptRenderer(metaclass=ABCMeta):
+
+    @abstractmethod
+    def render(self, usr: UserInfo, args: ProgramArguments, cwd: str) -> str:
+        pass
+
+    @abstractmethod
+    def get_script_extension(self) -> str:
+        pass
+
+    @abstractmethod
+    def get_interpreter(self) -> str:
+        pass
+
+
+class BashSudoScriptRenderer(ScriptRenderer):
+
+    def render(self, usr: UserInfo, args: ProgramArguments, path_info: PathInfo) -> str:
+
+        home_opts = ""
+        if not args.usehome:
+            home_opts = "-m -d {u.home_dir}".format(u=usr)
+
+        script_template = """#!/usr/bin/env bash
 groupadd -g {u.group_id} {u.user_name}
 useradd -u {u.user_id} -g {u.group_id} {home} {u.user_name}
-cd /work_dir
+cd {p.root_in_container}{p.cwd}
 sudo -u {u.user_name} HOME={u.home_dir} {a.command}
-"""
-    return script_template.format(u=usr, a=args, home=home_opts)
+    """
+        return script_template.format(u=usr, a=args,
+                                      home=home_opts, p=path_info
+        )
+
+    def get_script_extension(self) -> str:
+        return 'sh'
+
+    def get_interpreter(self) -> str:
+        return '/bin/bash'
 
 
-def write_run_script(user_info: UserInfo, args: ProgramArguments) -> str:
-
-    script = render_run_script(user_info, args)
-
-    script_name = "dockerusr_run_script_{u.user_name}_{hash}.sh" \
-        .format(u=user_info, hash=md5_sum(script))
-
-    full_path = "/tmp/{sn}".format(sn=script_name)
-
-    with open(full_path, "w") as text_file:
-        text_file.write(script)
-
-    return script_name
+def render_script_name(extension: str, username: str, script_content: str) -> str:
+    return "dockerusr_run_script_{u}_{hash}.{extension}" \
+                .format(u=username, hash=md5_sum(script_content), extension=extension)
 
 
-def render_docker_run_command(script_name: str,
-                              args: ProgramArguments, cwd: str, usr: UserInfo) -> str:
+def write_to_file(file_path: str, contents: str) -> str:
+
+    with open(file_path, "w") as text_file:
+        text_file.write(contents)
+
+
+def render_docker_run_command(interpreter: str, script_name: str,
+                              args: ProgramArguments, usr: UserInfo, path_info: PathInfo) -> str:
 
     home_volume = ""
     if args.usehome:
         home_volume = "-v {u.home_dir}:{u.home_dir}".format(u=usr)
 
-    volumes = "-v /tmp:/t -v {cwd}:/work_dir {hv}".format(cwd=cwd, hv=home_volume)
+    volumes = "-v {p.tmp}:{p.tmp_in_container} -v {p.cwd}:{p.root_in_container}{p.cwd} {hv}".format(
+                p=path_info, hv=home_volume
+    )
 
     rmcontainer = "--rm"
     if args.keep_container:
         rmcontainer = ""
 
-    return "docker run {rm} {volumes} -ti {a.image} /bin/bash /t/{sn}".format(
-            a=args, sn=script_name, volumes=volumes, rm=rmcontainer
+    return "docker run {rm} {volumes} -ti {a.image} {interpreter} {p.tmp_in_container}/{sn}".format(
+            a=args, sn=script_name, volumes=volumes, rm=rmcontainer,
+            interpreter=interpreter, p=path_info
     )
 
 
@@ -168,9 +207,19 @@ def main():
 
     arguments = ProgramArguments.parse(sys.argv)
     user_info = UserInfo.get_user_info()
-    working_dir = os.getcwd()
-    script_name = write_run_script(user_info, arguments)
-    docker_cmd = render_docker_run_command(script_name, arguments, working_dir, user_info)
+    path_info = PathInfo()
+
+    script_renderer = BashSudoScriptRenderer()  # type: ScriptRenderer
+    script_contents = script_renderer.render(user_info, arguments, path_info)
+    interpreter = script_renderer.get_interpreter()
+    extension = script_renderer.get_script_extension()
+    script_name = render_script_name(extension, user_info.user_name, script_contents)
+
+    full_script_path = "{tmp}/{sn}".format(tmp=path_info.tmp, sn=script_name)
+    write_to_file(full_script_path, script_contents)
+
+    docker_cmd = render_docker_run_command(interpreter, script_name,
+                                           arguments, user_info, path_info)
 
     if not arguments.dry_run:
         subprocess.call(docker_cmd, shell=True)
@@ -178,9 +227,9 @@ def main():
         print(docker_cmd)
 
     if not arguments.keep_script:
-        os.remove("/tmp/{sn}".format(sn=script_name))
+        os.remove(full_script_path)
     else:
-        print("keeping /tmp/{sn}".format(sn=script_name))
+        print("keeping {s}".format(s=full_script_path))
 
 if __name__ == "__main__":
     main()
