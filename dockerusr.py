@@ -10,7 +10,7 @@ import pwd
 import subprocess
 import sys
 from abc import abstractmethod, ABCMeta
-
+import re
 
 def md5_sum(plain_text: str):
     md5 = hashlib.md5()
@@ -63,7 +63,7 @@ class ProgramArguments:
         self.keep_container = keep_container
         self.keep_script = keep_script
         self.dry_run = dry_run
-        self.container_name = container_name
+        self.container_name = re.sub("[^a-zA-Z0-9]", "_", container_name)
 
     @staticmethod
     def parse(argv):
@@ -204,7 +204,7 @@ def render_docker_run_command(interpreter: str, script_name: str,
 
     container_name = ""
     if args.container_name:
-        container_name = "--name {name}".format(name=args.container_name)
+        container_name = "--name {name} -h {name}".format(name=args.container_name)
         
     return "docker run {name} {rm} {volumes} -ti {a.image} {interpreter} {p.tmp_in_container}/{sn}".format(
             a=args, sn=script_name, volumes=volumes, rm=rmcontainer,
