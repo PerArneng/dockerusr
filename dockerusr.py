@@ -52,16 +52,18 @@ class ProgramArguments:
     keep_container = False  # type: bool
     keep_script = False  # type: bool
     dry_run = False  # type: bool
+    container_name = None  # type: str
 
     def __init__(self, image: str, command: str,
                  usehome: bool, keep_container: bool, keep_script: bool,
-                 dry_run: bool):
+                 dry_run: bool, container_name: str):
         self.image = image
         self.command = command
         self.usehome = usehome
         self.keep_container = keep_container
         self.keep_script = keep_script
         self.dry_run = dry_run
+        self.container_name = container_name
 
     @staticmethod
     def parse(argv):
@@ -85,6 +87,9 @@ class ProgramArguments:
 
         parser.add_argument('-d', '--dryrun', action='store_true', default=False,
                             help='do not run docker just output the intent', required=False)
+                            
+        parser.add_argument('-n', '--containername',
+                            help='the name of the container', required=False)
 
 
         if '--' not in argv:
@@ -114,7 +119,7 @@ class ProgramArguments:
             exit(1)
 
         return ProgramArguments(args.image, command, args.usehome,
-                                args.keepcontainer, args.keepscript, args.dryrun)
+                                args.keepcontainer, args.keepscript, args.dryrun, args.containername)
 
 
 class PathInfo:
@@ -197,9 +202,13 @@ def render_docker_run_command(interpreter: str, script_name: str,
     if args.keep_container:
         rmcontainer = ""
 
-    return "docker run {rm} {volumes} -ti {a.image} {interpreter} {p.tmp_in_container}/{sn}".format(
+    container_name = ""
+    if args.container_name:
+        container_name = "--name {name}".format(name=args.container_name)
+        
+    return "docker run {name} {rm} {volumes} -ti {a.image} {interpreter} {p.tmp_in_container}/{sn}".format(
             a=args, sn=script_name, volumes=volumes, rm=rmcontainer,
-            interpreter=interpreter, p=path_info
+            interpreter=interpreter, p=path_info, name=container_name
     )
 
 
